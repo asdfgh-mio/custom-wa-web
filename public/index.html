@@ -3,62 +3,151 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot Launcher</title>
+    <title>WhatsApp Web Pro</title>
+    <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; margin-top: 50px; }
-        .box { border: 1px solid #ccc; padding: 20px; border-radius: 8px; text-align: center; }
-        button { margin-top: 15px; padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
-        .loading { display: none; margin-top: 15px; color: #ff9900; font-weight: bold; }
-        .success { color: green; margin-top: 15px; font-weight: bold; }
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; background: #d1d7db; }
+        .app { display: flex; height: 100vh; max-width: 1600px; margin: 0 auto; background: #fff; box-shadow: 0 1px 1px rgba(0,0,0,0.1); }
+        
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #00a884; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; color: white; }
+        .overlay-box { background: white; padding: 40px; border-radius: 10px; text-align: center; color: #333; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .overlay-box button { background: #00a884; color: white; border: none; padding: 10px 20px; margin-top: 15px; cursor: pointer; border-radius: 5px; font-weight: bold; }
+        
+        .sidebar { width: 30%; border-right: 1px solid #d1d7db; display: flex; flex-direction: column; background: #fff; }
+        .header { background: #f0f2f5; height: 60px; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; font-weight: 500; color: #111b21; border-bottom: 1px solid #d1d7db; box-sizing: border-box; }
+        
+        .chat-list { overflow-y: auto; flex-grow: 1; background: #fff; }
+        .chat-item { padding: 12px 15px; border-bottom: 1px solid #f2f2f2; cursor: pointer; display: flex; flex-direction: column; }
+        .chat-item:hover { background: #f5f6f6; }
+        .chat-title { font-weight: bold; color: #111b21; font-size: 15px; }
+        .chat-preview { color: #667781; font-size: 13px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .chat-area { width: 70%; display: flex; flex-direction: column; }
+        .messages { flex-grow: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; background-color: #efeae2; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-attachment: fixed; background-size: contain; opacity: 0.95; }
+        
+        .msg-bubble { max-width: 65%; padding: 6px 9px; margin-bottom: 12px; font-size: 14.2px; color: #111b21; line-height: 19px; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); }
+        .msg-in { background: #fff; align-self: flex-start; border-radius: 0 7.5px 7.5px 7.5px; }
+        .msg-out { background: #d9fdd3; align-self: flex-end; border-radius: 7.5px 0 7.5px 7.5px; }
+        
+        .input-area { background: #f0f2f5; padding: 10px 16px; display: flex; gap: 10px; align-items: center; }
+        .input-area input { flex-grow: 1; padding: 12px 15px; border-radius: 8px; border: none; outline: none; font-size: 15px; }
+        .input-area button { background: #00a884; color: white; border: none; padding: 10px 20px; border-radius: 24px; cursor: pointer; font-weight: bold; }
+        .action-btn { background: #e9edef; color: #54656f; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div class="box">
-        <h2>Upload creds.json</h2>
-        <input type="file" id="fileInput" accept=".json">
-        <br>
-        <button onclick="startBot()">Upload & Start Bot</button>
-        
-        <div id="loader" class="loading">Uploading & Starting Bot... Please Wait...</div>
-        <div id="status" class="success"></div>
+    <div id="uploadScreen" class="overlay">
+        <div class="overlay-box">
+            <h2>WhatsApp Web</h2>
+            <p>Upload creds.json to inject session</p>
+            <input type="file" id="credsInput" accept=".json"><br>
+            <button onclick="startSession()">Login</button>
+            <p id="loaderText" style="display:none; color:#00a884; margin-top:15px;">Syncing Chats...</p>
+        </div>
+    </div>
+
+    <div class="app">
+        <div class="sidebar">
+            <div class="header">Chats</div>
+            <div class="chat-list" id="chatList"></div>
+        </div>
+
+        <div class="chat-area">
+            <div class="header">
+                <span id="activeChatName">Select a chat to start messaging</span>
+                <div id="chatActions" style="display:none;">
+                    <button class="action-btn" id="followBtn" onclick="followChannel()">Follow Channel</button>
+                    <button class="action-btn" id="addBtn" onclick="addUser()">Add User (Group)</button>
+                </div>
+            </div>
+            <div class="messages" id="messagesArea"></div>
+            <div class="input-area">
+                <input type="text" id="msgInput" placeholder="Type a message">
+                <button onclick="sendMsg()">Send</button>
+            </div>
+        </div>
     </div>
 
     <script>
-        async function startBot() {
-            const fileInput = document.getElementById('fileInput');
-            const loader = document.getElementById('loader');
-            const status = document.getElementById('status');
+        const socket = io();
+        let activeJid = '';
+        let activeType = '';
 
-            if (!fileInput.files.length) {
-                alert("Please select your creds.json file first!");
-                return;
-            }
-
+        async function startSession() {
+            const file = document.getElementById('credsInput').files[0];
+            if(!file) return alert('Select creds.json first');
+            
+            document.getElementById('loaderText').style.display = 'block';
             const formData = new FormData();
-            formData.append('credsFile', fileInput.files[0]);
+            formData.append('credsFile', file);
+            await fetch('/upload', { method: 'POST', body: formData });
+        }
 
-            // Show loading UI
-            loader.style.display = 'block';
-            status.innerText = '';
-            fileInput.disabled = true;
+        socket.on('system_status', (data) => {
+            if(data.status === 'connected') document.getElementById('uploadScreen').style.display = 'none';
+        });
 
-            try {
-                const response = await fetch('/upload-and-start', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
-                
-                // Hide loader and show success message
-                loader.style.display = 'none';
-                status.innerText = result.message;
-            } catch (error) {
-                loader.style.display = 'none';
-                status.style.color = 'red';
-                status.innerText = "Error starting bot. Check server logs.";
-            } finally {
-                fileInput.disabled = false;
+        socket.on('chat_update', (data) => {
+            const chatList = document.getElementById('chatList');
+            let item = document.getElementById('chat-' + data.jid);
+            
+            if(!item) {
+                item = document.createElement('div');
+                item.className = 'chat-item';
+                item.id = 'chat-' + data.jid;
+                item.onclick = () => openChat(data.jid, data.sender, data.type);
+                chatList.prepend(item);
+            }
+            
+            item.innerHTML = `
+                <div class="chat-title">${data.sender}</div>
+                <div class="chat-preview">${data.text}</div>
+            `;
+
+            if(activeJid === data.jid) appendMessage(data.text, data.fromMe ? 'out' : 'in');
+        });
+
+        function openChat(jid, name, type) {
+            activeJid = jid;
+            activeType = type;
+            document.getElementById('activeChatName').innerText = `${name} (${type})`;
+            document.getElementById('messagesArea').innerHTML = ''; 
+            
+            // Show/Hide context actions
+            document.getElementById('chatActions').style.display = 'block';
+            document.getElementById('followBtn').style.display = type === 'Channel' ? 'inline-block' : 'none';
+            document.getElementById('addBtn').style.display = type === 'Group' ? 'inline-block' : 'none';
+        }
+
+        function appendMessage(text, dir) {
+            const area = document.getElementById('messagesArea');
+            const div = document.createElement('div');
+            div.className = `msg-bubble msg-${dir}`;
+            div.innerText = text;
+            area.appendChild(div);
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function sendMsg() {
+            const text = document.getElementById('msgInput').value;
+            if(!text || !activeJid) return;
+            socket.emit('send_message', { jid: activeJid, text: text });
+            document.getElementById('msgInput').value = '';
+        }
+
+        function followChannel() {
+            if(activeJid) {
+                socket.emit('follow_channel', activeJid);
+                alert('Follow request sent');
+            }
+        }
+
+        function addUser() {
+            let target = prompt("Enter number to add (with country code):");
+            if(target && activeJid) {
+                socket.emit('add_user', { groupJid: activeJid, targetJid: `${target}@s.whatsapp.net` });
+                alert('Add request sent');
             }
         }
     </script>
