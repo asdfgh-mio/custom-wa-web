@@ -1,57 +1,103 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const multer = require('multer');
 const fs = require('fs');
-const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 
 const app = express();
-const port = 3000;
+const server = http.createServer(app);
+const io = new Server(server);
 
 app.use(express.static('public'));
 
-// Setup Multer to strictly save file as 'creds.json' inside './session' folder
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         const dir = './session';
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         cb(null, dir);
     },
-    filename: (req, file, cb) => {
-        cb(null, 'creds.json');
-    }
+    filename: (req, file, cb) => cb(null, 'creds.json')
 });
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
-app.post('/upload-and-start', upload.single('credsFile'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'creds.json file is missing' });
+let sock;
 
-    res.json({ success: true, message: 'Creds uploaded! Booting up WhatsApp Bot...' });
-    
-    // Background mein bot start karna
-    launchBot();
+app.post('/upload', upload.single('credsFile'), async (req, res) => {
+    res.json({ success: true });
+    startWhatsAppEngine();
 });
 
-async function launchBot() {
-    console.log("Reading keys from creds.json...");
+async function startWhatsAppEngine() {
     const { state, saveCreds } = await useMultiFileAuthState('./session');
+    const { version } = await fetchLatestBaileysVersion();
     
-    const sock = makeWASocket({
+    sock = makeWASocket({
+        version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false
-    });
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, isNewLogin } = update;
-        if (connection === 'open') {
-            console.log('Bot is Live and Connected using uploaded creds!');
-            sock.sendMessage(sock.user.id, { text: 'Bot successfully started from uploaded creds.json!' });
-        } else if (connection === 'close') {
-            console.log('Connection closed.');
-        }
+        syncFullHistory: true, 
+        browser: ['Custom Web Client', 'Chrome', '20.0.04']
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        if (update.connection === 'open') {
+            io.emit('system_status', { status: 'connected' });
+        }
+    });
+
+    // Handle History Sync (Purani Chats load karna)
+    sock.ev.on('messaging-history.set', ({ chats }) => {
+        chats.forEach(chat => {
+            io.emit('chat_update', {
+                jid: chat.id,
+                type: chat.id.includes('@g.us') ? 'Group' : (chat.id.includes('@newsletter') ? 'Channel' : 'Direct'),
+                sender: chat.name || chat.id.split('@')[0],
+                text: 'Load chat history to view',
+                fromMe: false
+            });
+        });
+    });
+
+    // Handle New Incoming Messages
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0];
+        if (!msg.message) return;
+        
+        const isGroup = msg.key.remoteJid.endsWith('@g.us');
+        const isChannel = msg.key.remoteJid.includes('@newsletter');
+        let type = isChannel ? 'Channel' : (isGroup ? 'Group' : 'Direct');
+        let text = msg.message.conversation || msg.message.extendedTextMessage?.text || '[Media/System Message]';
+
+        io.emit('chat_update', {
+            jid: msg.key.remoteJid,
+            type: type,
+            sender: msg.pushName || msg.key.remoteJid.split('@')[0],
+            text: text,
+            fromMe: msg.key.fromMe
+        });
+    });
 }
 
-app.listen(port, () => console.log(`Server running at http://localhost:${port}`));
+// Frontend Commands Handler
+io.on('connection', (socket) => {
+    socket.on('send_message', async (data) => {
+        if (sock) {
+            await sock.sendMessage(data.jid, { text: data.text });
+            socket.emit('chat_update', { jid: data.jid, sender: 'You', text: data.text, fromMe: true, type: 'Direct' });
+        }
+    });
+
+    socket.on('follow_channel', async (jid) => {
+        if (sock) await sock.newsletterFollow(jid);
+    });
+
+    socket.on('add_user', async (data) => {
+        if (sock) await sock.groupParticipantsUpdate(data.groupJid, [data.targetJid], "add");
+    });
+});
+
+server.listen(3000, () => console.log('🚀 Custom WhatsApp UI live on port 3000'));
