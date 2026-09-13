@@ -3,108 +3,63 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Custom WhatsApp Web</title>
-    <script src="/socket.io/socket.io.js"></script>
+    <title>Bot Launcher</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #111b21; color: white; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-        .container { background: #202c33; padding: 20px; border-radius: 10px; width: 100%; max-width: 600px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); margin-bottom: 20px; }
-        h2 { text-align: center; color: #00a884; margin-top: 0; }
-        .status { text-align: center; font-weight: bold; margin-bottom: 15px; padding: 10px; border-radius: 5px; background: #2a3942; }
-        input[type="file"], input[type="text"], button { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 5px; border: none; box-sizing: border-box; }
-        input[type="text"] { background: #2a3942; color: white; border: 1px solid #3b4a54; }
-        button { background: #00a884; color: white; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:hover { background: #008f6f; }
-        .chat-box { background: #0b141a; height: 300px; border-radius: 5px; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; border: 1px solid #3b4a54; }
-        .msg { background: #202c33; padding: 10px; border-radius: 8px; max-width: 80%; word-wrap: break-word; }
-        .msg.sent { background: #005c4b; align-self: flex-end; }
-        .sender-name { font-size: 11px; color: #00a884; font-weight: bold; margin-bottom: 3px; display: block; }
+        body { font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; margin-top: 50px; }
+        .box { border: 1px solid #ccc; padding: 20px; border-radius: 8px; text-align: center; }
+        button { margin-top: 15px; padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        .loading { display: none; margin-top: 15px; color: #ff9900; font-weight: bold; }
+        .success { color: green; margin-top: 15px; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div class="container">
-        <h2>WhatsApp Connect</h2>
-        <div id="statusBox" class="status">🟡 Waiting for creds.json...</div>
+    <div class="box">
+        <h2>Upload creds.json</h2>
+        <input type="file" id="fileInput" accept=".json">
+        <br>
+        <button onclick="startBot()">Upload & Start Bot</button>
         
-        <form id="uploadForm">
-            <label style="font-size: 14px; margin-bottom: 5px; display: block;">Upload your creds.json file:</label>
-            <input type="file" id="credsFile" accept=".json" required>
-            <button type="submit">Connect to WhatsApp</button>
-        </form>
-    </div>
-
-    <div class="container">
-        <h2>Live Chats</h2>
-        <div class="chat-box" id="chatBox">
-            <!-- Messages will appear here -->
-        </div>
-
-        <h3 style="font-size: 16px; margin-top: 20px;">Send a Message</h3>
-        <input type="text" id="targetNumber" placeholder="Number (e.g. 923001234567)" required>
-        <input type="text" id="targetMessage" placeholder="Type a message..." required>
-        <button onclick="sendMessage()">Send Message</button>
+        <div id="loader" class="loading">Uploading & Starting Bot... Please Wait...</div>
+        <div id="status" class="success"></div>
     </div>
 
     <script>
-        const socket = io();
-        const statusBox = document.getElementById('statusBox');
-        const chatBox = document.getElementById('chatBox');
+        async function startBot() {
+            const fileInput = document.getElementById('fileInput');
+            const loader = document.getElementById('loader');
+            const status = document.getElementById('status');
 
-        // Handle File Upload
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const fileInput = document.getElementById('credsFile');
-            
+            if (!fileInput.files.length) {
+                alert("Please select your creds.json file first!");
+                return;
+            }
+
             const formData = new FormData();
             formData.append('credsFile', fileInput.files[0]);
 
-            statusBox.innerHTML = "🔄 Uploading and connecting...";
-            statusBox.style.color = "#fbbf24";
+            // Show loading UI
+            loader.style.display = 'block';
+            status.innerText = '';
+            fileInput.disabled = true;
 
             try {
-                const res = await fetch('/upload-creds', { method: 'POST', body: formData });
-                const data = await res.json();
-                if (!data.success) throw new Error(data.message);
-            } catch (err) {
-                statusBox.innerHTML = "❌ " + err.message;
-                statusBox.style.color = "#ef4444";
+                const response = await fetch('/upload-and-start', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                
+                // Hide loader and show success message
+                loader.style.display = 'none';
+                status.innerText = result.message;
+            } catch (error) {
+                loader.style.display = 'none';
+                status.style.color = 'red';
+                status.innerText = "Error starting bot. Check server logs.";
+            } finally {
+                fileInput.disabled = false;
             }
-        });
-
-        // Socket listeners
-        socket.on('status', (data) => {
-            statusBox.innerHTML = data.text;
-            statusBox.style.color = data.color;
-        });
-
-        socket.on('new_message', (data) => {
-            const div = document.createElement('div');
-            div.className = 'msg';
-            div.innerHTML = `<span class="sender-name">${data.sender}</span>${data.text}`;
-            chatBox.appendChild(div);
-            chatBox.scrollTop = chatBox.scrollHeight;
-        });
-
-        socket.on('message_sent', (data) => {
-            if (data.success) {
-                const div = document.createElement('div');
-                div.className = 'msg sent';
-                div.innerHTML = document.getElementById('targetMessage').value;
-                chatBox.appendChild(div);
-                chatBox.scrollTop = chatBox.scrollHeight;
-                document.getElementById('targetMessage').value = ''; // clear input
-            } else {
-                alert("Failed to send: " + data.error);
-            }
-        });
-
-        // Send Message Function
-        function sendMessage() {
-            const number = document.getElementById('targetNumber').value;
-            const text = document.getElementById('targetMessage').value;
-            if(!number || !text) return alert("Please fill both number and message fields.");
-            
-            socket.emit('send_message', { number, text });
         }
     </script>
 </body>
